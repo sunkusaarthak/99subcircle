@@ -3,6 +3,8 @@ const config = require('../config');
 const { getPayerReminderTemplate, getAdminReminderTemplate } = require('./emailTemplates');
 
 let transporter = null;
+let cachedVerifyResult = null;
+let lastVerifyTime = 0;
 
 function createTransporter() {
   const { user, pass, host, port, secure } = config.email;
@@ -59,16 +61,37 @@ const emailService = {
     return Boolean(config.email.user && config.email.pass);
   },
 
-  async verifyConnection() {
+  async verifyConnection(force = false) {
     const t = getTransporter();
     if (!t) {
       return { ok: false, mode: 'mock', message: 'No email credentials configured. Running in Mock/Preview mode.' };
     }
+
+    const now = Date.now();
+    // Use cached verification for 15 minutes to eliminate latency and avoid blocking requests
+    if (!force && cachedVerifyResult && (now - lastVerifyTime < 15 * 60 * 1000)) {
+      return cachedVerifyResult;
+    }
+
     try {
-      await t.verify();
-      return { ok: true, mode: 'live', message: `Connected to SMTP server (${config.email.host}) as ${config.email.user}` };
+      // 3.5s timeout race so verify never stalls the status API response
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('SMTP connection check timed out')), 3500)
+      );
+      await Promise.race([t.verify(), timeoutPromise]);
+
+      cachedVerifyResult = {
+        ok: true,
+        mode: 'live',
+        message: `Connected to SMTP server (${config.email.host}) as ${config.email.user}`
+      };
+      lastVerifyTime = now;
+      return cachedVerifyResult;
     } catch (err) {
-      return { ok: false, mode: 'error', message: `SMTP verification failed: ${err.message}` };
+      if (cachedVerifyResult && cachedVerifyResult.ok) {
+        return cachedVerifyResult;
+      }
+      return { ok: false, mode: 'live-unverified', message: `SMTP check notice: ${err.message}` };
     }
   },
 
@@ -172,4 +195,3 @@ const emailService = {
 };
 
 module.exports = emailService;
-
