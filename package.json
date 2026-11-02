@@ -1,0 +1,26 @@
+{
+  "name": "subscription-rotation-mailer",
+  "version": "1.0.0",
+  "description": "Family and Friends Subscription Rotation and Reminder App",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "client": "npm --prefix client run dev",
+    "build:client": "npm --prefix client install --include=dev && npm --prefix client run build",
+    "build": "npm --prefix client install --include=dev && npm --prefix client run build",
+    "db:setup": "node scripts/setup-db.js",
+    "dev": "node server/index.js"
+  },
+  "keywords": ["subscription", "mailer", "rotation", "render", "family-sharing"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.10.0",
+    "pg": "^8.13.1"
+  }
+}

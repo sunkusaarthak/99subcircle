@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: 99subcircle
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CRON_SCHEDULE
+        value: "0 9 * * *"
+      - key: CRON_SECRET
+        generateValue: true
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: "99subcircle"
+      - key: DATABASE_URL
+        sync: false

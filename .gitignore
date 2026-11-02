@@ -1,0 +1,24 @@
+# Node dependencies
+node_modules/
+client/node_modules/
+client/dist/
+
+# Environment variables
+.env
+
+# Local data store (contains actual member emails/keys)
+data/
+!data/.gitkeep
+
+# Java & legacy build files
+.classpath
+.project
+.settings/
+/target/**
+.vscode/
+legacy-cloud-function/target/
+legacy-cloud-function/src/main/resources/credentials.json
+
+# OS files
+.DS_Store
+Thumbs.db
