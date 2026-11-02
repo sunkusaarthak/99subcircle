@@ -2,24 +2,20 @@ const cron = require('node-cron');
 const db = require('../db');
 const emailService = require('./emailService');
 const config = require('../config');
+const logger = require('../utils/logger');
+const {
+  getCycleMonthName,
+  getYearMonthKey,
+  formatDueDate,
+  getCurrentAndNextPayer
+} = require('./rotationService');
 
-function getCycleMonthName(date = new Date()) {
-  return date.toLocaleString('default', { month: 'long', year: 'numeric' });
-}
-
-function getYearMonthKey(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
-
-function formatDueDate(billingDay, date = new Date()) {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const due = new Date(year, month, billingDay);
-  return due.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' });
-}
+let scheduledTask = null;
+let lastCheckTimestamp = 0;
+const MIN_CHECK_INTERVAL_MS = 60 * 60 * 1000; // Throttle to at most once per hour
 
 /**
- * Process a single group's monthly reminder
+ * Process a single group's monthly reminder and advance its rotation cycle.
  */
 async function processGroupReminder(group, force = false) {
   const now = new Date();
@@ -37,8 +33,7 @@ async function processGroupReminder(group, force = false) {
     };
   }
 
-  // Find active members
-  const activeMembers = (group.members || []).filter(m => m.active !== false);
+  const { activeMembers, payer, nextPayer, nextIndex } = getCurrentAndNextPayer(group);
   if (activeMembers.length === 0) {
     return {
       groupId: group.id,
@@ -48,12 +43,7 @@ async function processGroupReminder(group, force = false) {
     };
   }
 
-  const currentIndex = (group.currentPayerIndex || 0) % activeMembers.length;
-  const payer = activeMembers[currentIndex];
-  const nextIndex = (currentIndex + 1) % activeMembers.length;
-  const nextPayer = activeMembers[nextIndex];
-
-  // Send emails
+  // Send reminder emails to payer and group admin
   const sendResults = await emailService.sendMonthlyReminders({
     group,
     payer,
@@ -63,15 +53,17 @@ async function processGroupReminder(group, force = false) {
   });
 
   const status = sendResults.errors.length === 0 ? 'SENT' : 'PARTIAL_ERROR';
-  const details = sendResults.errors.length > 0 ? sendResults.errors.join('; ') : 'Successfully sent reminder emails';
+  const details = sendResults.errors.length > 0
+    ? sendResults.errors.join('; ')
+    : 'Successfully sent reminder emails';
 
   // Advance rotation
-  const updatedGroup = await db.updateGroup(group.id, {
+  await db.updateGroup(group.id, {
     currentPayerIndex: nextIndex,
     lastBilledDate: now.toISOString()
   });
 
-  // Log in history
+  // Log in audit history
   await db.addLog({
     groupId: group.id,
     groupName: group.name,
@@ -90,7 +82,7 @@ async function processGroupReminder(group, force = false) {
     groupName: group.name,
     payer: payer.name,
     payerEmail: payer.email,
-    nextPayer: nextPayer.name,
+    nextPayer: nextPayer ? nextPayer.name : null,
     amount: `${group.currency}${group.amount}`,
     status,
     details
@@ -98,7 +90,7 @@ async function processGroupReminder(group, force = false) {
 }
 
 /**
- * Check all groups and process those due today
+ * Check all groups and process those due today.
  */
 async function checkAndRunDueReminders(forceAll = false) {
   const groups = await db.getGroups();
@@ -106,14 +98,13 @@ async function checkAndRunDueReminders(forceAll = false) {
   const results = [];
 
   for (const group of groups) {
-    // If forceAll is true, process regardless of billingDay
-    // Otherwise check if today is the group's billing day
     const isDue = forceAll || group.billingDay === today;
     if (isDue) {
       try {
         const result = await processGroupReminder(group, forceAll);
         results.push(result);
       } catch (err) {
+        logger.error(`Error processing reminder for circle "${group.name}":`, err.message);
         results.push({
           groupId: group.id,
           groupName: group.name,
@@ -126,12 +117,8 @@ async function checkAndRunDueReminders(forceAll = false) {
   return results;
 }
 
-let lastCheckTimestamp = 0;
-const MIN_CHECK_INTERVAL_MS = 60 * 60 * 1000; // Throttle to at most once per hour
-
 /**
  * Throttled internal check triggered by healthcheck ping or server boot.
- * Keeps all execution, rotation, and reminder logic 100% internal.
  */
 async function checkAndRunDueRemindersIfNeeded() {
   const now = Date.now();
@@ -139,34 +126,51 @@ async function checkAndRunDueRemindersIfNeeded() {
     return { skipped: true, reason: 'Checked recently' };
   }
   lastCheckTimestamp = now;
-  console.log('🔄 Executing internal due-reminders check...');
+  logger.info('Executing internal due-reminders check...');
   try {
     const results = await checkAndRunDueReminders(false);
-    console.log(`Internal check completed. Processed ${results.length} circle(s).`);
+    logger.info(`Internal check completed. Evaluated ${results.length} circle(s).`);
     return { skipped: false, count: results.length, results };
   } catch (err) {
-    console.error('Error during internal reminder check:', err.message);
+    logger.error('Error during internal reminder check:', err.message);
     return { error: err.message };
   }
 }
 
+/**
+ * Start the internal cron scheduler.
+ */
 function initScheduler() {
-  console.log(`⏰ Initializing cron scheduler with schedule: "${config.cronSchedule}"`);
-  cron.schedule(config.cronSchedule, async () => {
-    console.log('⏰ Running daily subscription reminder check...');
+  if (scheduledTask) {
+    scheduledTask.stop();
+  }
+  logger.info(`Initializing cron scheduler with schedule: "${config.cronSchedule}"`);
+  scheduledTask = cron.schedule(config.cronSchedule, async () => {
+    logger.info('Running scheduled daily subscription reminder check...');
     try {
       const results = await checkAndRunDueReminders(false);
-      console.log(`Daily check completed. Processed ${results.length} group(s).`);
+      logger.info(`Daily check completed. Processed ${results.length} group(s).`);
     } catch (err) {
-      console.error('Error during scheduled reminder check:', err);
+      logger.error('Error during scheduled reminder check:', err.message);
     }
   });
 }
 
+/**
+ * Stop scheduler gracefully during server shutdown.
+ */
+function stopScheduler() {
+  if (scheduledTask) {
+    scheduledTask.stop();
+    scheduledTask = null;
+    logger.info('Cron scheduler stopped.');
+  }
+}
+
 module.exports = {
   initScheduler,
+  stopScheduler,
   processGroupReminder,
   checkAndRunDueReminders,
   checkAndRunDueRemindersIfNeeded
 };
-

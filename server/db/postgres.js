@@ -1,6 +1,7 @@
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
+const logger = require('../utils/logger');
 
 let pool = null;
 
@@ -18,7 +19,16 @@ function getPool(databaseUrl) {
       connectionString: cleanUrl,
       ssl: isCloudDb || process.env.NODE_ENV === 'production'
         ? { rejectUnauthorized: false }
-        : false
+        : false,
+      max: 10,
+      min: 2,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000
+    });
+
+    // Handle idle connection errors gracefully without crashing the process
+    pool.on('error', (err) => {
+      logger.error('Unexpected error on idle PostgreSQL client:', err.message);
     });
   }
   return pool;
@@ -29,12 +39,20 @@ async function initPostgres(databaseUrl) {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
   await p.query(schemaSql);
-  console.log('PostgreSQL schema initialized successfully.');
+  logger.info('PostgreSQL schema initialized successfully.');
 }
 
 const postgresStore = {
   async init(databaseUrl) {
     await initPostgres(databaseUrl);
+  },
+
+  async close() {
+    if (pool) {
+      await pool.end();
+      pool = null;
+      logger.info('PostgreSQL connection pool drained and closed.');
+    }
   },
 
   async getGroups(databaseUrl) {
@@ -97,7 +115,7 @@ const postgresStore = {
       groupData.amount,
       groupData.currency || '₹',
       groupData.billingDay || 1,
-      groupData.adminName,
+      groupData.adminName || 'Admin',
       groupData.adminEmail,
       groupData.paymentDetails || '',
       JSON.stringify(groupData.members || []),
@@ -200,4 +218,3 @@ const postgresStore = {
 };
 
 module.exports = postgresStore;
-

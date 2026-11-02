@@ -1,40 +1,49 @@
 const config = require('../config');
 const jsonStore = require('./jsonStore');
 const postgresStore = require('./postgres');
+const logger = require('../utils/logger');
 
 let isPostgres = false;
 
 async function initDb() {
   if (config.databaseUrl) {
     try {
-      console.log('Connecting to PostgreSQL database...');
+      logger.info('Connecting to PostgreSQL database...');
       await postgresStore.init(config.databaseUrl);
       isPostgres = true;
-      console.log('PostgreSQL connected and tables initialized.');
+      logger.info('PostgreSQL connected and tables initialized.');
 
       // Check if fresh DB and migrate any existing local groups
       const existingInPg = await postgresStore.getGroups(config.databaseUrl);
       if (existingInPg.length === 0) {
         const localGroups = await jsonStore.getGroups();
         if (localGroups.length > 0) {
-          console.log(`Migrating ${localGroups.length} existing circle(s) to PostgreSQL...`);
+          logger.info(`Migrating ${localGroups.length} existing circle(s) to PostgreSQL...`);
           for (const g of localGroups) {
             await postgresStore.createGroup(config.databaseUrl, g);
           }
-          console.log('Migration to PostgreSQL completed.');
+          logger.info('Migration to PostgreSQL completed.');
         }
       }
     } catch (err) {
-      console.warn('Failed to connect to PostgreSQL. Falling back to local JSON store:', err.message);
+      logger.warn('Failed to connect to PostgreSQL. Falling back to local JSON store:', err.message);
       isPostgres = false;
     }
   } else {
-    console.log('No DATABASE_URL provided. Using local JSON store (data/database.json).');
+    logger.info('No DATABASE_URL provided. Using local JSON store (data/database.json).');
+  }
+}
+
+async function closeDb() {
+  if (isPostgres) {
+    await postgresStore.close();
   }
 }
 
 const db = {
   initDb,
+  closeDb,
+  isPostgres: () => isPostgres,
   async getGroups() {
     return isPostgres ? postgresStore.getGroups(config.databaseUrl) : jsonStore.getGroups();
   },
@@ -59,4 +68,3 @@ const db = {
 };
 
 module.exports = db;
-
